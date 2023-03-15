@@ -3,6 +3,7 @@
    "name": "1-timers-serial",
   "version": "1.0.0",
   "dependencies": [
-    "boost-asio"
+    "boost-asio",
+    "gtest"
   ]
 }
