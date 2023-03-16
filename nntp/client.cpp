@@ -1,6 +1,4 @@
-#include <nntp/Client.h>
-
-#include <cctype>
+#include <nntp/client.h>
 
 namespace nntp
 {

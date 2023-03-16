@@ -1,7 +1,7 @@
 ---
 Language:        Cpp
 # BasedOnStyle:  LLVM
-AccessModifierOffset: -2
+AccessModifierOffset: -4
 AlignAfterOpenBracket: Align
 AlignConsecutiveAssignments: false
 AlignConsecutiveDeclarations: false
@@ -37,7 +37,7 @@ BreakBeforeBraces: Allman
 BreakBeforeTernaryOperators: true
 BreakConstructorInitializersBeforeComma: false
 BreakConstructorInitializers: AfterColon
-ColumnLimit:     132
+ColumnLimit:     120
 CommentPragmas:  '^ IWYU pragma:'
 ConstructorInitializerAllOnOneLineOrOnePerLine: false
 ConstructorInitializerIndentWidth: 4

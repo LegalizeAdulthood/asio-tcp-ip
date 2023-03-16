@@ -1,4 +1,5 @@
-#include <nntp/Client.h>
+#include <nntp/client.h>
+#include <nntp/processor.h>
 
 #include <gtest/gtest.h>
 
@@ -102,4 +103,14 @@ TEST_F(CapabilitiesTest, capabilities_complete_list)
     m_client.receive(".");
 
     ASSERT_EQ(nntp::State::connected, m_client.state());
+}
+
+TEST(ProcessorTest, connect)
+{
+    boost::asio::io_context ctx;
+    nntp::Processor processor(ctx);
+
+    processor.connect("news.gmane.io");
+
+    ctx.run();
 }
