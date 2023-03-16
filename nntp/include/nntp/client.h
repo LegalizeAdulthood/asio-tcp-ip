@@ -9,11 +9,13 @@ enum class State
     disconnected = 1,
     connected,
     error,
+    capabilitiesList,
 };
 
 class Client
 {
   public:
+    void send(char const *text);
     void receive(char const *text);
     State state() const;
     bool postingAllowed() const;
