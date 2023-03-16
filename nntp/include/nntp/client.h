@@ -1,16 +1,26 @@
 #pragma once
+#include <gtest/gtest-assertion-result.h>
 
 namespace nntp
 {
 
-class client
+enum class State
+{
+    disconnected = 1,
+    connected,
+    error,
+};
+
+class Client
 {
   public:
-    bool connected() const;
     void receive(char const *text);
+    State state() const;
+    bool postingAllowed() const;
 
-  private:
-    bool m_connected{};
+private:
+    State m_state{State::disconnected};
+    bool m_postingAllowed{};
 };
 
 } // namespace nntp

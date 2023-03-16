@@ -1,19 +1,54 @@
-#include <nntp/client.h>
+#include <nntp/Client.h>
 
 #include <gtest/gtest.h>
 
-TEST(client, initially_disconnected)
+class ClientTest : public ::testing::Test
 {
-    nntp::client client;
+protected:
+    nntp::Client client;
+};
 
-    ASSERT_FALSE(client.connected());
+TEST_F(ClientTest, initially_disconnected)
+{
+    ASSERT_EQ(nntp::State::disconnected, client.state());
 }
 
-TEST(client, greeting_connects)
+TEST_F(ClientTest, greeting_posting_ok_connects)
 {
-    nntp::client client;
+    client.receive("200 news.gmane.io InterNetNews NNRP server INN 2.6.3 ready (posting ok)");
 
-    client.receive("200 news.gmane.io InterNetNews NNRP server INN 2.6.3 ready (posting ok)\r\n");
+    ASSERT_EQ(nntp::State::connected, client.state());
+    ASSERT_TRUE(client.postingAllowed());
+}
 
-    ASSERT_TRUE(client.connected());
+TEST_F(ClientTest, greeting_posting_prohibited_connects)
+{
+    client.receive("201 news.gmane.io InterNetNews NNRP server INN 2.6.3 ready (posting prohibited)");
+
+    ASSERT_EQ(nntp::State::connected, client.state());
+    ASSERT_FALSE(client.postingAllowed());
+}
+
+TEST_F(ClientTest, temporarily_unavailable)
+{
+    client.receive("400 Service temporarily unavailable");
+
+    ASSERT_EQ(nntp::State::disconnected, client.state());
+    ASSERT_FALSE(client.postingAllowed());
+}
+
+TEST_F(ClientTest, permanently_unavailable)
+{
+    client.receive("502 Service permanently unavailable");
+
+    ASSERT_EQ(nntp::State::disconnected, client.state());
+    ASSERT_FALSE(client.postingAllowed());
+}
+
+TEST_F(ClientTest, error)
+{
+    client.receive("300 some random message");
+
+    ASSERT_EQ(nntp::State::error, client.state());
+    ASSERT_FALSE(client.postingAllowed());
 }
