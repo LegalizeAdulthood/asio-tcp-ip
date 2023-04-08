@@ -1,13 +1,28 @@
 #include <nntp/client.h>
-#include <nntp/processor.h>
 
 #include <gtest/gtest.h>
+#include <gmock/gmock.h>
+
+class MockServer : public nntp::IServer
+{
+public:
+    MOCK_METHOD(void, setClient, (nntp::IClient *), (override));
+    MOCK_METHOD(void, send, (std::string_view), (override));
+};
 
 class ClientTest : public ::testing::Test
 {
 protected:
     nntp::Client m_client;
 };
+
+TEST(ClientTest, client_set_on_server)
+{
+    testing::StrictMock<MockServer> server;
+    EXPECT_CALL(server, setClient(testing::NotNull())).Times(1);
+
+    nntp::Client client(&server);
+}
 
 TEST_F(ClientTest, initially_disconnected)
 {
@@ -59,6 +74,7 @@ class CommandTest : public ClientTest
 public:
     void SetUp() override
     {
+        ClientTest::SetUp();
         m_client.receive("200 OK");
         ASSERT_EQ(nntp::State::connected, m_client.state());
     }
@@ -69,6 +85,7 @@ class CapabilitiesTest : public CommandTest
 public:
     void SetUp() override
     {
+        CommandTest::SetUp();
         m_client.send("CAPABILITIES");
     }
 };
@@ -103,14 +120,4 @@ TEST_F(CapabilitiesTest, capabilities_complete_list)
     m_client.receive(".");
 
     ASSERT_EQ(nntp::State::connected, m_client.state());
-}
-
-TEST(ProcessorTest, connect)
-{
-    boost::asio::io_context ctx;
-    nntp::Processor processor(ctx);
-
-    processor.connect("news.gmane.io");
-
-    ctx.run();
 }

@@ -11,22 +11,22 @@ enum Status
     permanentlyUnavailable = 502
 };
 
-void Client::send(char const *text)
+void Client::send(std::string_view line)
 {
     m_state = State::capabilitiesList;
 }
 
-void Client::receive(char const *text)
+void Client::receive(std::string_view line)
 {
     if (m_state == State::disconnected)
     {
-        const int status = (text[0] - '0') * 100 + (text[1] - '0') * 10 + text[2] - '0';
+        const int status = (line[0] - '0') * 100 + (line[1] - '0') * 10 + line[2] - '0';
         switch (status)
         {
         case postingOk:
         case postingProhibited:
             m_state = State::connected;
-            m_postingAllowed = text[2] == '0';
+            m_postingAllowed = line[2] == '0';
             break;
 
         case temporarilyUnavailable:
@@ -43,7 +43,7 @@ void Client::receive(char const *text)
     }
     else if (m_state == State::capabilitiesList)
     {
-        if (text[0] == '.' && text[1] == '\0')
+        if (line[0] == '.' && line[1] == '\0')
         {
             m_state = State::connected;
         }
