@@ -16,7 +16,7 @@ protected:
     nntp::Client m_client;
 };
 
-TEST(ClientTest, client_set_on_server)
+TEST(BasicClientTest, client_set_on_server)
 {
     testing::StrictMock<MockServer> server;
     EXPECT_CALL(server, setClient(testing::NotNull())).Times(1);

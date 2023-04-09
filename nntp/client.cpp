@@ -43,7 +43,7 @@ void Client::receive(std::string_view line)
     }
     else if (m_state == State::capabilitiesList)
     {
-        if (line[0] == '.' && line[1] == '\0')
+        if (line == ".")
         {
             m_state = State::connected;
         }
