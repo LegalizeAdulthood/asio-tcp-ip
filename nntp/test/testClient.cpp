@@ -3,6 +3,10 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 
+using namespace testing;
+
+namespace {
+
 class MockServer : public nntp::IServer
 {
 public:
@@ -10,19 +14,36 @@ public:
     MOCK_METHOD(void, send, (std::string_view), (override));
 };
 
-class ClientTest : public ::testing::Test
+class ServerWithClientSet : public StrictMock<MockServer>
 {
-protected:
-    nntp::Client m_client;
+public:
+    ServerWithClientSet()
+    {
+        EXPECT_CALL(*this, setClient(NotNull())).WillOnce(SaveArg<0>(&m_client));
+    }
+
+    nntp::IClient *m_client{};
 };
+
+} // namespace
 
 TEST(BasicClientTest, client_set_on_server)
 {
-    testing::StrictMock<MockServer> server;
-    EXPECT_CALL(server, setClient(testing::NotNull())).Times(1);
+    ServerWithClientSet server;
 
     nntp::Client client(&server);
 }
+
+namespace {
+
+class ClientTest : public Test
+{
+protected:
+    ServerWithClientSet m_server;
+    nntp::Client m_client{&m_server};
+};
+
+} // namespace
 
 TEST_F(ClientTest, initially_disconnected)
 {
@@ -80,44 +101,62 @@ public:
     }
 };
 
-class CapabilitiesTest : public CommandTest
+class ClientCapabilitiesTest : public CommandTest
 {
 public:
     void SetUp() override
     {
         CommandTest::SetUp();
-        m_client.send("CAPABILITIES");
     }
 };
 
-TEST_F(CapabilitiesTest, start_capabilities)
+TEST_F(ClientCapabilitiesTest, start_capabilities)
 {
-    ASSERT_EQ(nntp::State::capabilitiesList, m_client.state());
-}
+    EXPECT_CALL(m_server, send(Eq("CAPABILITIES")));
 
-TEST_F(CapabilitiesTest, capabilities_begin_list)
-{
-    m_client.receive("101 Capability list:");
-
-    ASSERT_EQ(nntp::State::capabilitiesList, m_client.state());
-}
-
-TEST_F(CapabilitiesTest, capabilities_partial_list)
-{
-    m_client.receive("101 Capability list:");
-
-    m_client.receive("VERSION 2");
+    m_client.capabilities();
 
     ASSERT_EQ(nntp::State::capabilitiesList, m_client.state());
 }
 
-TEST_F(CapabilitiesTest, capabilities_complete_list)
+TEST_F(ClientCapabilitiesTest, capabilities_begin_list)
 {
-    m_client.receive("101 Capability list:");
-    m_client.receive("VERSION 2");
-    m_client.receive("IMPLEMENTATION INN 2.6.3");
+    EXPECT_CALL(m_server, send(Eq("CAPABILITIES")))
+        .WillOnce(Invoke([this] { m_client.receive("101 Capability list:"); }));
 
-    m_client.receive(".");
+    m_client.capabilities();
+
+    ASSERT_EQ(nntp::State::capabilitiesList, m_client.state());
+}
+
+TEST_F(ClientCapabilitiesTest, capabilities_partial_list)
+{
+    EXPECT_CALL(m_server, send(Eq("CAPABILITIES")))
+        .WillOnce(Invoke(
+            [this]
+            {
+                m_client.receive("101 Capability list:");
+                m_client.receive("VERSION 2");
+            }));
+    
+    m_client.capabilities();
+
+    ASSERT_EQ(nntp::State::capabilitiesList, m_client.state());
+}
+
+TEST_F(ClientCapabilitiesTest, capabilities_complete_list)
+{
+    EXPECT_CALL(m_server, send(Eq("CAPABILITIES")))
+        .WillOnce(Invoke(
+            [this]
+            {
+                m_client.receive("101 Capability list:");
+                m_client.receive("VERSION 2");
+                m_client.receive("IMPLEMENTATION INN 2.6.3");
+                m_client.receive(".");
+            }));
+
+    m_client.capabilities();
 
     ASSERT_EQ(nntp::State::connected, m_client.state());
 }

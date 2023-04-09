@@ -42,7 +42,7 @@ public:
         m_server->setClient(this);
     }
 
-    void send(std::string_view line);
+    void capabilities();
     void receive(std::string_view line) override;
     State state() const;
     bool postingAllowed() const;

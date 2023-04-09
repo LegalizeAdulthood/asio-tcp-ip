@@ -11,9 +11,10 @@ enum Status
     permanentlyUnavailable = 502
 };
 
-void Client::send(std::string_view line)
+void Client::capabilities()
 {
     m_state = State::capabilitiesList;
+    m_server->send("CAPABILITIES");
 }
 
 void Client::receive(std::string_view line)
