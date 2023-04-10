@@ -1,9 +1,13 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
-   "name": "1-timers-serial",
+  "name": "1-timers-serial",
   "version": "1.0.0",
   "dependencies": [
     "boost-asio",
-    "gtest"
+    "gtest",
+    {
+      "name": "pdcurses",
+      "platform": "windows"
+    }
   ]
 }

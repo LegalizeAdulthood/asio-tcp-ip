@@ -8,3 +8,4 @@ find_package(BoostAsio)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 add_subdirectory(nntp)
+add_subdirectory(news-reader)
