@@ -54,15 +54,19 @@ private:
         wrefresh(m_window);
     }
     std::string readLine();
-    void handleConnect(const error_code &ec, const ip::tcp::endpoint &endpoint);
-    void handleGreeting(const error_code &ec, size_t len);
-    void handleCapabilitiesResponse(const error_code &ec, size_t len);
-    void readDotDelimitedBlock(const error_code &ec, size_t len);
+    void        handleConnect(const error_code &ec, const ip::tcp::endpoint &endpoint);
+    void        handleGreeting(const error_code &ec, size_t len);
+    void        sendCommand(const std::string &command, bool returnsDataBlock = false);
+    void        handlCommandWritten(const error_code &ec, size_t len, bool returnsDataBlock);
+    void        handleCommandResponse(const error_code &ec, size_t len, bool returnsDataBLock);
+    void        handleDataBlockLine(const error_code &ec, size_t len);
 
     std::string     m_name;
     WINDOW         *m_window;
     ip::tcp::socket m_socket;
     asio::streambuf m_input;
+    std::string     m_command;
+    bool            m_returnsDataBlock{};
 };
 
 std::string Connection::readLine()
@@ -96,12 +100,19 @@ void Connection::handleGreeting(const error_code &ec, size_t len)
     }
 
     status(readLine());
-    const char *command = "CAPABILITIES\r\n";
-    async_write(m_socket, asio::buffer(command, std::strlen(command)),
-                [this](const error_code &ec, size_t len) { handleCapabilitiesResponse(ec, len); });
+
+    sendCommand("CAPABILITIES", true);
 }
 
-void Connection::handleCapabilitiesResponse(const error_code &ec, size_t len)
+void Connection::sendCommand(const std::string &command, bool returnsDataBlock)
+{
+    m_command = command + "\r\n";
+    m_returnsDataBlock = returnsDataBlock;
+    async_write(m_socket, asio::buffer(m_command),
+                [this](const error_code &ec, size_t len) { handlCommandWritten(ec, len, false); });
+}
+
+void Connection::handlCommandWritten(const error_code &ec, size_t len, bool returnsDataBlock)
 {
     if (ec)
     {
@@ -109,12 +120,30 @@ void Connection::handleCapabilitiesResponse(const error_code &ec, size_t len)
         return;
     }
 
-    status("CAPABILITIES");
+    status(m_command.substr(0, -2));
     async_read_until(m_socket, m_input, "\r\n",
-                     [this](const error_code &ec, size_t len) { readDotDelimitedBlock(ec, len); });
+                     [this, returnsDataBlock](const error_code &ec, size_t len)
+                     { handleCommandResponse(ec, len, returnsDataBlock); });
 }
 
-void Connection::readDotDelimitedBlock(const error_code &ec, size_t len)
+void Connection::handleCommandResponse(const error_code &ec, size_t len, bool returnsDataBLock)
+{
+    if (ec)
+    {
+        status(m_name + ": Error " + ec.what() + " reading data block.");
+        return;
+    }
+
+    const std::string line = readLine();
+    status(line);
+    if (m_returnsDataBlock)
+    {
+        async_read_until(m_socket, m_input, "\r\n",
+                         [this](const error_code &ec, size_t len) { handleDataBlockLine(ec, len); });
+    }
+}
+
+void Connection::handleDataBlockLine(const error_code &ec, size_t len)
 {
     if (ec)
     {
@@ -127,7 +156,7 @@ void Connection::readDotDelimitedBlock(const error_code &ec, size_t len)
     {
         status(line);
         async_read_until(m_socket, m_input, "\r\n",
-                         [this](const error_code &ec, size_t len) { readDotDelimitedBlock(ec, len); });
+                         [this](const error_code &ec, size_t len) { handleDataBlockLine(ec, len); });
     }
 }
 
@@ -147,14 +176,14 @@ private:
 
     asio::io_context                         m_context;
     ip::tcp::resolver                        m_resolver;
-    int m_connecting{};
+    int                                      m_connecting{};
     std::vector<std::shared_ptr<Connection>> m_connections;
 };
 
 void Reader::addServer(const char *server)
 {
     constexpr int LINES_PER_WINDOW = 15;
-    const int y = m_connecting * LINES_PER_WINDOW;
+    const int     y = m_connecting * LINES_PER_WINDOW;
     ++m_connecting;
     WINDOW *window = newwin(LINES_PER_WINDOW, 00, y, 0);
     scrollok(window, TRUE);
