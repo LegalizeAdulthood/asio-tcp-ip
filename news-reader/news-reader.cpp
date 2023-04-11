@@ -1,6 +1,8 @@
 #include <boost/asio.hpp>
+#include <boost/asio/buffer.hpp>
 #include <curses.h>
 
+#include <cstring>
 #include <istream>
 #include <memory>
 #include <string>
@@ -26,43 +28,61 @@ public:
     }
 };
 
-inline int addstr(const std::string &str)
+inline int waddstr(WINDOW *window, const std::string &str)
 {
-    return addstr(str.c_str());
+    return waddstr(window, str.c_str());
 }
 
 class Connection
 {
 public:
-    Connection(const char *name, asio::io_context &context, const resolver_results &results) :
+    Connection(const char *name, WINDOW *window, asio::io_context &context, const resolver_results &results) :
         m_name(name),
+        m_window(window),
         m_socket(context)
     {
-        addstr("Connecting to server " + m_name + "...\n");
-        refresh();
+        status("Connecting...");
         asio::async_connect(m_socket, results,
                             [this](const error_code &ec, const ip::tcp::endpoint &endpoint)
                             { handleConnect(ec, endpoint); });
     }
 
 private:
+    void status(const std::string &text)
+    {
+        waddstr(m_window, m_name + ": " + text + '\n');
+        wrefresh(m_window);
+    }
+    std::string readLine();
     void handleConnect(const error_code &ec, const ip::tcp::endpoint &endpoint);
     void handleGreeting(const error_code &ec, size_t len);
+    void handleCapabilitiesResponse(const error_code &ec, size_t len);
+    void readDotDelimitedBlock(const error_code &ec, size_t len);
 
     std::string     m_name;
+    WINDOW         *m_window;
     ip::tcp::socket m_socket;
     asio::streambuf m_input;
 };
+
+std::string Connection::readLine()
+{
+    std::string  line;
+    std::istream str(&m_input);
+    std::getline(str, line);
+    line.pop_back();
+    return line;
+}
 
 void Connection::handleConnect(const error_code &ec, const ip::tcp::endpoint &endpoint)
 {
     if (ec)
     {
-        addstr("Error " + ec.what() + " connecting to server " + m_name + '\n');
+        status("Error " + ec.what() + " connecting to server " + m_name);
         return;
     }
 
-    addstr("Awaiting greeting from " + m_name + '\n');
+    status("Connected");
     refresh();
     async_read_until(m_socket, m_input, "\r\n", [this](const error_code &ec, size_t len) { handleGreeting(ec, len); });
 }
@@ -71,15 +91,44 @@ void Connection::handleGreeting(const error_code &ec, size_t len)
 {
     if (ec)
     {
-        addstr("Error " + ec.what() + " greeting server " + m_name + '\n');
+        status("Error " + ec.what() + " greeting server " + m_name);
         return;
     }
 
-    std::string  greeting;
-    std::istream str(&m_input);
-    std::getline(str, greeting, '\r');
-    addstr("Server " + m_name + " sends greeting: " + greeting + '\n');
-    refresh();
+    status(readLine());
+    const char *command = "CAPABILITIES\r\n";
+    async_write(m_socket, asio::buffer(command, std::strlen(command)),
+                [this](const error_code &ec, size_t len) { handleCapabilitiesResponse(ec, len); });
+}
+
+void Connection::handleCapabilitiesResponse(const error_code &ec, size_t len)
+{
+    if (ec)
+    {
+        status(m_name + ": Error " + ec.what() + " getting response to CAPABILITIES command.");
+        return;
+    }
+
+    status("CAPABILITIES");
+    async_read_until(m_socket, m_input, "\r\n",
+                     [this](const error_code &ec, size_t len) { readDotDelimitedBlock(ec, len); });
+}
+
+void Connection::readDotDelimitedBlock(const error_code &ec, size_t len)
+{
+    if (ec)
+    {
+        status(m_name + ": Error " + ec.what() + " reading data block.");
+        return;
+    }
+
+    const std::string line = readLine();
+    if (line != ".")
+    {
+        status(line);
+        async_read_until(m_socket, m_input, "\r\n",
+                         [this](const error_code &ec, size_t len) { readDotDelimitedBlock(ec, len); });
+    }
 }
 
 class Reader
@@ -94,31 +143,39 @@ public:
     void addServer(const char *server);
 
 private:
-    void handleResolve(const error_code &ec, const resolver_results &results, const char *server);
+    void handleResolve(const error_code &ec, const resolver_results &results, const char *server, WINDOW *window);
 
     asio::io_context                         m_context;
     ip::tcp::resolver                        m_resolver;
+    int m_connecting{};
     std::vector<std::shared_ptr<Connection>> m_connections;
 };
 
 void Reader::addServer(const char *server)
 {
-    addstr("Resolving server " + std::string{server} + "...\n");
-    refresh();
+    constexpr int LINES_PER_WINDOW = 15;
+    const int y = m_connecting * LINES_PER_WINDOW;
+    ++m_connecting;
+    WINDOW *window = newwin(LINES_PER_WINDOW, 00, y, 0);
+    scrollok(window, TRUE);
+    waddstr(window, "Resolving server " + std::string{server} + "...\n");
+    wrefresh(window);
     m_resolver.async_resolve(server, "nntp",
-                             [this, server](const error_code &ec, const resolver_results &results)
-                             { handleResolve(ec, results, server); });
+                             [this, server, window](const error_code &ec, const resolver_results &results)
+                             { handleResolve(ec, results, server, window); });
 }
 
-void Reader::handleResolve(const error_code &ec, const resolver_results &results, const char *server)
+void Reader::handleResolve(const error_code &ec, const resolver_results &results, const char *server, WINDOW *window)
 {
     if (ec)
     {
-        addstr("Error " + ec.what() + " resolving server " + std::string{server} + '\n');
+        --m_connecting;
+        waddstr(window, "Error " + ec.what() + " resolving server " + std::string{server} + '\n');
+        refresh();
         return;
     }
 
-    m_connections.push_back(std::make_shared<Connection>(server, m_context, results));
+    m_connections.push_back(std::make_shared<Connection>(server, window, m_context, results));
 }
 
 void Reader::run()
