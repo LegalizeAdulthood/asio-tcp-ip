@@ -23,7 +23,6 @@ public:
     }
     ~Curses()
     {
-        getch();
         endwin();
     }
 };
@@ -32,6 +31,22 @@ inline int waddstr(WINDOW *window, const std::string &str)
 {
     return waddstr(window, str.c_str());
 }
+
+enum class Status
+{
+    None = 0,
+    CapabilityListFollows = 101,
+    ServiceAvailablePostingAllowed = 200,
+    ServiceAvailablePostingProhibited = 201,
+    ServiceTemporarilyUnavailable = 400,
+    ServicePermanentlyUnavailable = 502
+};
+
+enum class Commands
+{
+    None = 0,
+    Capabilities,
+};
 
 class Connection
 {
@@ -52,29 +67,46 @@ private:
     {
         waddstr(m_window, m_name + ": " + text + '\n');
         wrefresh(m_window);
+        napms(50);
     }
-    std::string readLine();
+    std::string getLine();
+    std::string getStatus();
     void        handleConnect(const error_code &ec, const ip::tcp::endpoint &endpoint);
     void        handleGreeting(const error_code &ec, size_t len);
     void        sendCommand(const std::string &command, bool returnsDataBlock = false);
-    void        handlCommandWritten(const error_code &ec, size_t len, bool returnsDataBlock);
-    void        handleCommandResponse(const error_code &ec, size_t len, bool returnsDataBLock);
+    void        handleCommandWritten(const error_code &ec, size_t len, bool returnsDataBlock);
+    void        handleCommandResponse(const error_code &ec, size_t len);
     void        handleDataBlockLine(const error_code &ec, size_t len);
+    std::string command()
+    {
+        return m_command.substr(0, m_command.length() - 2);
+    }
 
+    int             m_number;
     std::string     m_name;
     WINDOW         *m_window;
     ip::tcp::socket m_socket;
     asio::streambuf m_input;
     std::string     m_command;
     bool            m_returnsDataBlock{};
+    Status          m_status{};
+    Status          m_expectedStatus{};
 };
 
-std::string Connection::readLine()
+std::string Connection::getLine()
 {
     std::string  line;
     std::istream str(&m_input);
     std::getline(str, line);
     line.pop_back();
+    return line;
+}
+
+std::string Connection::getStatus()
+{
+    std::string line = getLine();
+    const int   status = (line[0] - '0') * 100 + (line[1] - '0') * 10 + line[2] - '0';
+    m_status = static_cast<Status>(status);
     return line;
 }
 
@@ -87,7 +119,6 @@ void Connection::handleConnect(const error_code &ec, const ip::tcp::endpoint &en
     }
 
     status("Connected");
-    refresh();
     async_read_until(m_socket, m_input, "\r\n", [this](const error_code &ec, size_t len) { handleGreeting(ec, len); });
 }
 
@@ -99,9 +130,12 @@ void Connection::handleGreeting(const error_code &ec, size_t len)
         return;
     }
 
-    status(readLine());
-
-    sendCommand("CAPABILITIES", true);
+    status(getStatus());
+    if (m_status == Status::ServiceAvailablePostingAllowed || m_status == Status::ServiceAvailablePostingProhibited)
+    {
+        m_expectedStatus = Status::CapabilityListFollows;
+        sendCommand("CAPABILITIES", true);
+    }
 }
 
 void Connection::sendCommand(const std::string &command, bool returnsDataBlock)
@@ -109,33 +143,34 @@ void Connection::sendCommand(const std::string &command, bool returnsDataBlock)
     m_command = command + "\r\n";
     m_returnsDataBlock = returnsDataBlock;
     async_write(m_socket, asio::buffer(m_command),
-                [this](const error_code &ec, size_t len) { handlCommandWritten(ec, len, false); });
+                [this](const error_code &ec, size_t len) { handleCommandWritten(ec, len, false); });
 }
 
-void Connection::handlCommandWritten(const error_code &ec, size_t len, bool returnsDataBlock)
+void Connection::handleCommandWritten(const error_code &ec, size_t len, bool returnsDataBlock)
 {
     if (ec)
     {
-        status(m_name + ": Error " + ec.what() + " getting response to CAPABILITIES command.");
+        status(m_name + ": Error " + ec.what() + " sending " + command() + " command.");
         return;
     }
 
-    status(m_command.substr(0, -2));
+    status(command());
     async_read_until(m_socket, m_input, "\r\n",
-                     [this, returnsDataBlock](const error_code &ec, size_t len)
-                     { handleCommandResponse(ec, len, returnsDataBlock); });
+                     [this](const error_code &ec, size_t len) { handleCommandResponse(ec, len); });
 }
 
-void Connection::handleCommandResponse(const error_code &ec, size_t len, bool returnsDataBLock)
+void Connection::handleCommandResponse(const error_code &ec, size_t len)
 {
     if (ec)
     {
-        status(m_name + ": Error " + ec.what() + " reading data block.");
+        status(m_name + ": Error " + ec.what() + " reading status for " + command() + " command.");
         return;
     }
 
-    const std::string line = readLine();
-    status(line);
+    status(getStatus());
+    if (m_status != m_expectedStatus)
+        return;
+
     if (m_returnsDataBlock)
     {
         async_read_until(m_socket, m_input, "\r\n",
@@ -151,12 +186,16 @@ void Connection::handleDataBlockLine(const error_code &ec, size_t len)
         return;
     }
 
-    const std::string line = readLine();
+    const std::string line = getLine();
     if (line != ".")
     {
         status(line);
         async_read_until(m_socket, m_input, "\r\n",
                          [this](const error_code &ec, size_t len) { handleDataBlockLine(ec, len); });
+    }
+    else
+    {
+        status("Finished.");
     }
 }
 
@@ -182,8 +221,11 @@ private:
 
 void Reader::addServer(const char *server)
 {
-    constexpr int LINES_PER_WINDOW = 15;
-    const int     y = m_connecting * LINES_PER_WINDOW;
+    int height;
+    int width;
+    getmaxyx(stdscr, height, width);
+    const int LINES_PER_WINDOW = (height - 1) / 4;
+    const int y = m_connecting * LINES_PER_WINDOW;
     ++m_connecting;
     WINDOW *window = newwin(LINES_PER_WINDOW, 00, y, 0);
     scrollok(window, TRUE);
@@ -212,6 +254,14 @@ void Reader::run()
     m_context.run();
 }
 
+WINDOW *createCommandWindow()
+{
+    int width;
+    int height;
+    getmaxyx(stdscr, height, width);
+    return newwin(1, 0, height - 1, 0);
+}
+
 int main()
 {
     Curses curses;
@@ -222,8 +272,13 @@ int main()
     {
         reader.addServer(server);
     }
+    WINDOW *commandWin = createCommandWindow();
+    waddstr(commandWin, "Press a key to exit.");
+    wrefresh(commandWin);
 
     reader.run();
+
+    wgetch(commandWin);
 
     return 0;
 }
