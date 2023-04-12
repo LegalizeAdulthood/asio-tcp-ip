@@ -1,8 +1,9 @@
 #include <boost/asio.hpp>
 #include <boost/asio/buffer.hpp>
+#include <boost/asio/ssl.hpp>
 #include <curses.h>
 
-#include <cstring>
+#include <functional>
 #include <istream>
 #include <memory>
 #include <string>
@@ -38,6 +39,8 @@ enum class Status
     CapabilityListFollows = 101,
     ServiceAvailablePostingAllowed = 200,
     ServiceAvailablePostingProhibited = 201,
+    ClosingConnection = 205,
+    BeginTLSNegotiation = 382,
     ServiceTemporarilyUnavailable = 400,
     ServicePermanentlyUnavailable = 502
 };
@@ -51,13 +54,14 @@ enum class Commands
 class Connection
 {
 public:
-    Connection(const char *name, WINDOW *window, asio::io_context &context, const resolver_results &results) :
+    Connection(const char *name, WINDOW *window, asio::io_context &context, asio::ssl::context &sslContext,
+               const resolver_results &results) :
         m_name(name),
         m_window(window),
-        m_socket(context)
+        m_socket(context, sslContext)
     {
         status("Connecting...");
-        asio::async_connect(m_socket, results,
+        asio::async_connect(m_socket.lowest_layer(), results,
                             [this](const error_code &ec, const ip::tcp::endpoint &endpoint)
                             { handleConnect(ec, endpoint); });
     }
@@ -65,32 +69,42 @@ public:
 private:
     void status(const std::string &text)
     {
-        waddstr(m_window, m_name + ": " + text + '\n');
+        waddstr(m_window, m_name + (m_usingTLS ? "[S]: " : ": ") + text + '\n');
         wrefresh(m_window);
-        napms(50);
+        napms(125);
     }
     std::string getLine();
     std::string getStatus();
+
+    void sendLine(std::function<void(const error_code &ec, size_t len)> handler);
+    void receiveLine(std::function<void(const error_code &ec, size_t len)> handler);
+
     void        handleConnect(const error_code &ec, const ip::tcp::endpoint &endpoint);
     void        handleGreeting(const error_code &ec, size_t len);
-    void        sendCommand(const std::string &command, bool returnsDataBlock = false);
+    void        sendCommand(const std::string &command, Status expectedStatus, bool returnsDataBlock = false);
     void        handleCommandWritten(const error_code &ec, size_t len, bool returnsDataBlock);
     void        handleCommandResponse(const error_code &ec, size_t len);
+    void        processCommandSuccess();
+    void        handleTLSHandshake(const error_code &ec);
     void        handleDataBlockLine(const error_code &ec, size_t len);
-    std::string command()
+    void        processDataBlock();
+    std::string command() const
     {
         return m_command.substr(0, m_command.length() - 2);
     }
 
-    int             m_number;
-    std::string     m_name;
-    WINDOW         *m_window;
-    ip::tcp::socket m_socket;
-    asio::streambuf m_input;
-    std::string     m_command;
-    bool            m_returnsDataBlock{};
-    Status          m_status{};
-    Status          m_expectedStatus{};
+    using Socket = asio::ssl::stream<ip::tcp::socket>;
+
+    std::string              m_name;
+    WINDOW                  *m_window;
+    Socket                   m_socket;
+    asio::streambuf          m_input;
+    std::string              m_command;
+    bool                     m_returnsDataBlock{};
+    Status                   m_status{};
+    Status                   m_expectedStatus{};
+    bool                     m_usingTLS{};
+    std::vector<std::string> m_dataBlock;
 };
 
 std::string Connection::getLine()
@@ -110,6 +124,30 @@ std::string Connection::getStatus()
     return line;
 }
 
+void Connection::sendLine(std::function<void(const error_code &ec, size_t len)> handler)
+{
+    if (m_usingTLS)
+    {
+        async_write(m_socket, asio::buffer(m_command), handler);
+    }
+    else
+    {
+        async_write(m_socket.next_layer(), asio::buffer(m_command), handler);
+    }
+}
+
+void Connection::receiveLine(std::function<void(const error_code &ec, size_t len)> handler)
+{
+    if (m_usingTLS)
+    {
+        async_read_until(m_socket, m_input, "\r\n", handler);
+    }
+    else
+    {
+        async_read_until(m_socket.next_layer(), m_input, "\r\n", handler);
+    }
+}
+
 void Connection::handleConnect(const error_code &ec, const ip::tcp::endpoint &endpoint)
 {
     if (ec)
@@ -119,7 +157,7 @@ void Connection::handleConnect(const error_code &ec, const ip::tcp::endpoint &en
     }
 
     status("Connected");
-    async_read_until(m_socket, m_input, "\r\n", [this](const error_code &ec, size_t len) { handleGreeting(ec, len); });
+    receiveLine([this](const error_code &ec, size_t len) { handleGreeting(ec, len); });
 }
 
 void Connection::handleGreeting(const error_code &ec, size_t len)
@@ -133,17 +171,17 @@ void Connection::handleGreeting(const error_code &ec, size_t len)
     status(getStatus());
     if (m_status == Status::ServiceAvailablePostingAllowed || m_status == Status::ServiceAvailablePostingProhibited)
     {
-        m_expectedStatus = Status::CapabilityListFollows;
-        sendCommand("CAPABILITIES", true);
+        sendCommand("CAPABILITIES", Status::CapabilityListFollows, true);
     }
 }
 
-void Connection::sendCommand(const std::string &command, bool returnsDataBlock)
+void Connection::sendCommand(const std::string &command, Status expectedStatus, bool returnsDataBlock)
 {
     m_command = command + "\r\n";
+    m_expectedStatus = expectedStatus;
     m_returnsDataBlock = returnsDataBlock;
-    async_write(m_socket, asio::buffer(m_command),
-                [this](const error_code &ec, size_t len) { handleCommandWritten(ec, len, false); });
+    m_dataBlock.clear();
+    sendLine([this](const error_code &ec, size_t len) { handleCommandWritten(ec, len, false); });
 }
 
 void Connection::handleCommandWritten(const error_code &ec, size_t len, bool returnsDataBlock)
@@ -155,8 +193,7 @@ void Connection::handleCommandWritten(const error_code &ec, size_t len, bool ret
     }
 
     status(command());
-    async_read_until(m_socket, m_input, "\r\n",
-                     [this](const error_code &ec, size_t len) { handleCommandResponse(ec, len); });
+    receiveLine([this](const error_code &ec, size_t len) { handleCommandResponse(ec, len); });
 }
 
 void Connection::handleCommandResponse(const error_code &ec, size_t len)
@@ -173,9 +210,33 @@ void Connection::handleCommandResponse(const error_code &ec, size_t len)
 
     if (m_returnsDataBlock)
     {
-        async_read_until(m_socket, m_input, "\r\n",
-                         [this](const error_code &ec, size_t len) { handleDataBlockLine(ec, len); });
+        receiveLine([this](const error_code &ec, size_t len) { handleDataBlockLine(ec, len); });
     }
+    else
+    {
+        processCommandSuccess();
+    }
+}
+
+void Connection::processCommandSuccess()
+{
+    if (command() == "STARTTLS")
+    {
+        m_socket.async_handshake(asio::ssl::stream_base::client,
+                                 [this](const error_code &ec) { handleTLSHandshake(ec); });
+    }
+}
+
+void Connection::handleTLSHandshake(const error_code &ec)
+{
+    if (ec)
+    {
+        status(m_name + ": Error " + ec.what() + " negotiating TLS.");
+        return;
+    }
+
+    m_usingTLS = true;
+    sendCommand("CAPABILITIES", Status::CapabilityListFollows, true);
 }
 
 void Connection::handleDataBlockLine(const error_code &ec, size_t len)
@@ -190,12 +251,39 @@ void Connection::handleDataBlockLine(const error_code &ec, size_t len)
     if (line != ".")
     {
         status(line);
-        async_read_until(m_socket, m_input, "\r\n",
-                         [this](const error_code &ec, size_t len) { handleDataBlockLine(ec, len); });
+        m_dataBlock.push_back(line);
+        receiveLine([this](const error_code &ec, size_t len) { handleDataBlockLine(ec, len); });
     }
     else
     {
-        status("Finished.");
+        processDataBlock();
+    }
+}
+
+void Connection::processDataBlock()
+{
+    if (command() == "CAPABILITIES")
+    {
+        if (!m_usingTLS)
+        {
+            bool supportsTLS{};
+            for (const std::string &line : m_dataBlock)
+            {
+                if (line == "STARTTLS")
+                {
+                    supportsTLS = true;
+                    break;
+                }
+            }
+            if (supportsTLS)
+            {
+                sendCommand("STARTTLS", Status::BeginTLSNegotiation);
+            }
+        }
+        else
+        {
+            sendCommand("QUIT", Status::ClosingConnection);
+        }
     }
 }
 
@@ -203,8 +291,10 @@ class Reader
 {
 public:
     Reader() :
+        m_sslContext(asio::ssl::context::method::tlsv12_client),
         m_resolver(m_context)
     {
+        m_sslContext.set_default_verify_paths();
     }
 
     void run();
@@ -214,6 +304,7 @@ private:
     void handleResolve(const error_code &ec, const resolver_results &results, const char *server, WINDOW *window);
 
     asio::io_context                         m_context;
+    asio::ssl::context                       m_sslContext;
     ip::tcp::resolver                        m_resolver;
     int                                      m_connecting{};
     std::vector<std::shared_ptr<Connection>> m_connections;
@@ -246,7 +337,7 @@ void Reader::handleResolve(const error_code &ec, const resolver_results &results
         return;
     }
 
-    m_connections.push_back(std::make_shared<Connection>(server, window, m_context, results));
+    m_connections.push_back(std::make_shared<Connection>(server, window, m_context, m_sslContext, results));
 }
 
 void Reader::run()
