@@ -353,15 +353,14 @@ WINDOW *createCommandWindow()
     return newwin(1, 0, height - 1, 0);
 }
 
-int main()
+int main(int argc, char *argv[])
 {
     Curses curses;
     Reader reader;
 
-    const char *servers[]{"news.xmission.com", "news.gmane.io", "news.gwene.org", "news.eternal-september.org"};
-    for (const char *server : servers)
+    for (int i = 1; i < argc; ++i)
     {
-        reader.addServer(server);
+        reader.addServer(argv[i]);
     }
     WINDOW *commandWin = createCommandWindow();
     waddstr(commandWin, "Press a key to exit.");
