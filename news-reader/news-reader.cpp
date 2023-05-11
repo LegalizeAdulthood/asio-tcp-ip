@@ -82,7 +82,7 @@ private:
     void        handleConnect(const error_code &ec, const ip::tcp::endpoint &endpoint);
     void        handleGreeting(const error_code &ec, size_t len);
     void        sendCommand(const std::string &command, Status expectedStatus, bool returnsDataBlock = false);
-    void        handleCommandWritten(const error_code &ec, size_t len, bool returnsDataBlock);
+    void        handleCommandWritten( const error_code &ec, size_t len );
     void        handleCommandResponse(const error_code &ec, size_t len);
     void        processCommandSuccess();
     void        handleTLSHandshake(const error_code &ec);
@@ -181,10 +181,10 @@ void Connection::sendCommand(const std::string &command, Status expectedStatus, 
     m_expectedStatus = expectedStatus;
     m_returnsDataBlock = returnsDataBlock;
     m_dataBlock.clear();
-    sendLine([this](const error_code &ec, size_t len) { handleCommandWritten(ec, len, false); });
+    sendLine([this](const error_code &ec, size_t len) { handleCommandWritten(ec, len); });
 }
 
-void Connection::handleCommandWritten(const error_code &ec, size_t len, bool returnsDataBlock)
+void Connection::handleCommandWritten(const error_code &ec, size_t len)
 {
     if (ec)
     {

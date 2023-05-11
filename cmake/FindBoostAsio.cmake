@@ -9,7 +9,7 @@ if(Boost_FOUND)
 	if(WIN32)
 	    target_compile_definitions(boost-asio INTERFACE _WIN32_WINNT=0x0601)
 	endif()
-	add_library(boost::asio ALIAS boost-asio)
+	add_library(Boost::asio ALIAS boost-asio)
     endif()
 endif()
 
